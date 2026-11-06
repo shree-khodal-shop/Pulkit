@@ -18272,7 +18272,7 @@ def on_text(m: types.Message) -> None:
     uid = m.from_user.id
     text = (m.text or "").strip()
     active_flow = (USER_STATES.get(uid) or {}).get("flow", "")
-    if text.startswith("/") and not (text == "/cancel" and active_flow in ("await_upi_id", "await_upi_qr", "await_adm_grpv_add", "await_adm_grpv_remove")): return
+    if text.startswith("/") and not (text == "/cancel" and active_flow in ("await_upi_id", "await_upi_qr", "await_adm_grpv_add", "await_adm_grpv_remove", "await_tg_backup_channel")): return
     if not RATE.allow(uid): return
     get_or_create_user(m.from_user)
     if maintenance_block(uid): return
@@ -18455,13 +18455,49 @@ def on_text(m: types.Message) -> None:
         # TG backup channel setting
         if flow == "await_tg_backup_channel":
             if not is_owner(uid): USER_STATES.pop(uid, None); return
-            ch = (text or "").strip()
-            if not ch: bot.reply_to(m, f"{G['no']} empty"); return
-            set_setting("tg_backup_channel", ch)
-            audit(uid, "tg_backup_channel_set", f"ch={ch}")
+            raw = (text or "").strip()
+            if raw.lower() == "/cancel":
+                USER_STATES.pop(uid, None)
+                bot.reply_to(m, "TG backup channel setup cancelled.")
+                return
+            if not raw:
+                bot.reply_to(m, f"{G['no']} Empty channel. Send @username or -100 channel ID.")
+                return
+            # Accept: @username, -100123..., NAME @username, or NAME|-100123...|invite-link.
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) >= 2:
+                chat_ref = parts[1]
+            else:
+                words = raw.split()
+                chat_ref = words[-1] if len(words) > 1 else words[0]
+            if chat_ref.startswith("https://t.me/"):
+                chat_ref = "@" + chat_ref.rstrip("/").split("/")[-1].lstrip("@")
+            if not chat_ref.startswith("@"):
+                try:
+                    int(chat_ref)
+                except (TypeError, ValueError):
+                    bot.reply_to(m, "❌ Invalid channel. Send @channelusername or -1001234567890.")
+                    return
+            try:
+                chat = bot.get_chat(chat_ref)
+                channel_id = int(chat.id)
+                member = bot.get_chat_member(channel_id, bot.get_me().id)
+                if getattr(member, "status", "") not in ("administrator", "creator"):
+                    bot.reply_to(m, "❌ Bot channel mein Admin nahi hai. Pehle bot ko Admin banao, phir dobara try karo.")
+                    return
+            except Exception as e:
+                bot.reply_to(m,
+                    "❌ Channel verify nahi hua. Username/ID check karo aur bot ko Admin banao. "
+                    f"Error: <code>{esc(str(e)[:220])}</code>", parse_mode="HTML")
+                return
+            set_setting("tg_backup_channel", str(channel_id))
+            audit(uid, "tg_backup_channel_set", f"ch={channel_id}")
             USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} TG backup channel: <code>{esc(ch)}</code>",
-                         parse_mode="HTML"); return
+            bot.reply_to(m,
+                f"{G['ok']} TG backup channel verified and saved: "
+                f"<b>{esc(getattr(chat, 'title', None) or getattr(chat, 'username', None) or str(channel_id))}</b> "
+                f"<code>{channel_id}</code>", parse_mode="HTML")
+            return
         # Group verification flows
         if flow == "await_adm_grpv_add":
             if not is_owner(uid): USER_STATES.pop(uid, None); return
@@ -18471,9 +18507,14 @@ def on_text(m: types.Message) -> None:
                 bot.reply_to(m, "Channel/group setup cancelled.")
                 return
             parts = [part.strip() for part in raw.split("|")]
+            # Also accept the simple form previously shown in the chat: NAME @username.
+            if len(parts) == 1:
+                words = raw.split(maxsplit=1)
+                if len(words) == 2:
+                    parts = [words[0].strip(), words[1].strip()]
             if len(parts) < 2 or not parts[0] or not parts[1]:
                 bot.reply_to(m,
-                    "Format:\n<code>NAME|@channelusername</code> (public)\n"
+                    "Format:\n<code>NAME @channelusername</code> or <code>NAME|@channelusername</code> (public)\n"
                     "<code>NAME|-1001234567890|https://t.me/+invite</code> (private)",
                     parse_mode="HTML")
                 return
